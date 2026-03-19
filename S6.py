@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 import numpy as np
+import datetime
 
 # streamlit run C:\Users\thoma\Documents\S6_Cruise_ship\S6.py
 
@@ -75,42 +76,29 @@ if uploaded_file:
     min_tijd = df['Time'].min().to_pydatetime()
     max_tijd = df['Time'].max().to_pydatetime()
 
-# 4. De rest van je session_state en slider code...
-if 'slider_val' not in st.session_state:
-    st.session_state.slider_val = (min_tijd, max_tijd)
 
-    # 2. Session state initialiseren
-    if 'slider_val' not in st.session_state:
-        st.session_state.slider_val = (min_tijd, max_tijd)
 
-    # 3. De Reset knop (verandert de waarde in de session state)
-    if st.button('Reset naar volledige periode'):
-        st.session_state.slider_val = (min_tijd, max_tijd)
+    if 'slider_key_v' not in st.session_state:
+        st.session_state.slider_key_v = 0
+    
+    if st.button('Reset'):
+        st.session_state.slider_key_v += 1
         st.rerun()
 
     # 4. DE ENIGE SLIDER (geen select_slider gebruiken!)
     # Door 'value' te koppelen aan de session_state, luistert hij naar de knop
     gekozen_bereik = st.slider(
-        "Selecteer tijdsperiode:",
-        min_value=min_tijd,
-        max_value=max_tijd,
-        value=st.session_state.slider_val
+        "Select timeperiod:",
+        min_value = min_tijd,
+        max_value = max_tijd,
+        value = (min_tijd, max_tijd),
+        format = "DD/MM/YY HH:mm",
+        step = datetime.timedelta(minutes=5),
+        key = f"slider_{st.session_state.slider_key_v}"
     )
 
     # 5. Filteren (gebruik de output van de enige slider)
     start_tijd, eind_tijd = gekozen_bereik
-    mask = (df['Time'] >= start_tijd) & (df['Time'] <= eind_tijd)
-    df_filtered = df.loc[mask].copy()
-
-
-    # 2. Slider maken voor tijdsselectie
-    start_tijd, eind_tijd = st.select_slider(
-        'Selecteer tijdsperiode voor analyse:',
-        options=df['Time'],
-        value=(df['Time'].min(), df['Time'].max())
-    )
-
-    # 3. DataFrame filteren op basis van selectie
     mask = (df['Time'] >= start_tijd) & (df['Time'] <= eind_tijd)
     df_filtered = df.loc[mask].copy()
 
@@ -168,60 +156,114 @@ if 'slider_val' not in st.session_state:
             "Rate over Time": st.column_config.LineChartColumn(
                 "Fuel Rate Trend",
                 width="medium",
-                help="Verloop van het verbruik over de geselecteerde periode"
+                help="Consumption trend over the selected period"
             ),
         },
         hide_index=True,
     )
 
+    # 1. Kolommen definiëren
+    bunker_cols = ['Bunker Aft Current Volume', 'Bunker FWD Current Volume']
+
+    # 2. Eerst interpoleren om NaN-waardes op te vullen
+    # 'linear' trekt een rechte lijn tussen het laatste bekende punt en het volgende punt
+    df_filtered[bunker_cols] = df_filtered[bunker_cols].interpolate(method='linear', limit_direction='both')
+
+    # 1. Instellen van het venster (bijv. 60 metingen als je per minuut logt)
+    window_size = 10 
+
+    # 2. Moving Average berekenen voor de bunkers
+    df_filtered['Bunker_AFT_Smooth'] = df_filtered['Bunker Aft Current Volume'].rolling(window=window_size, center=True).mean()
+    df_filtered['Bunker_FWD_Smooth'] = df_filtered['Bunker FWD Current Volume'].rolling(window=window_size, center=True).mean()
+
+    # 3. Totaal volume berekenen op basis van de gladgestreken data
+    df_filtered['Total_Bunker_Smooth'] = df_filtered['Bunker_AFT_Smooth'] + df_filtered['Bunker_FWD_Smooth']
+
+    # 4. Gebruik de eerste en laatste GELDIGE (niet-NaN) waarde voor het verbruik
+    # Rolling mean introduceert NaN aan het begin/eind, bfill/ffill lost dit op
+    vol_start = df_filtered['Total_Bunker_Smooth'].bfill().iloc[0]
+    vol_eind = df_filtered['Total_Bunker_Smooth'].ffill().iloc[-1]
+
+    verbruik_bunker = vol_start - vol_eind    
 
 
+
+
+    # 4. Haal je berekende integraal op (Total Fuel Rate)
+    # verbruik_integraal = consumption_total # De waarde uit je vorige stap
+
+    # 5. Bereken de afwijking
+    afwijking_procent = ((consumption_total - verbruik_bunker) / verbruik_bunker) * 100 if verbruik_bunker != 0 else 0
+
+    # 6. Weergave in Streamlit
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Consumption based on bunkervolumes", f"{verbruik_bunker:.0f} L")
+    col2.metric("Consumption based on integrating the fuelrates", f"{consumption_total:.0f} L")
+    col3.metric("Afwijking", f"{afwijking_procent:.1f}%", delta=f"{afwijking_procent:.1f}%", delta_color="inverse")
 
 
 # --- SECTION: TREND ANALYSIS ---------------------------------------------------------------------------------------
+    st.header("Trend analysis")
+    LAYOUT = {
+    "Column 1": ["General", "Extern", "Heaters"],
+    "Column 2": ["Engines"],
+    "Column 3": ["Generators"]
+}
+
+    GROUPS = {
+        "**General**": ["Speed Over Ground", "Depth", "Course Over Ground", "Bunker Aft Current Volume", "Bunker FWD Current Volume"
+        ],
+        "**Extern**": ["Humidity Air", "Temperature Air", "App Wind Speed", "App Wind Angle"],
+        "**Heaters**": [
+            "Heater 1 Fuel Rate", "Heater 1 Fuel Temp", "Heater 2 Fuel Rate", "Heater 2 Fuel Temp"],
+
+        "**Engines**": [
+            "ME SB Alternator Voltage", "ME SB Boost Pressure", "ME SB Coolant Pressure", "ME SB Coolant Temp", "ME SB Load", "ME SB Exhaust Temp",
+            "ME SB Fuel Rate", "ME SB Fuel Temp", "ME SB Oil Pressure", "ME SB Oil Temp", "ME SB RPM", "ME PS Alternator Voltage",
+            "ME PS Boost Pressure", "ME PS Coolant Pressure", "ME PS Coolant Temp", "ME PS Load", "ME PS Exhaust Temp", "ME PS Fuel Rate",
+            "ME PS FuelTemp", "ME PS Oil Pressure", "ME PS Oil Temp", "ME PS RPM"
+        ],
+        "**Generators**": [
+            "Generator FWD Fuel Rate", "Generator FWD Real Power", "Generator FWD Apparent Power", "Generator FWD Phase A Current",
+            "Generator FWD Phase B Current", "Generator FWD Phase C Current", "Generator Port AFT Fuel Rate", "Generator Port AFT Real Power",
+            "Generator Port AFT Apparent Power", "Generator Port AFT Phase A Current", "Generator Port AFT Phase B Current",
+            "Generator Port AFT Phase C Current", "Generator Starboard AFT Fuel Rate", "Generator Starboard AFT Real Power",
+            "Generator Starboard AFT Apparent Power", "Generator Starboard AFT Phase A Current", "Generator Starboard AFT Phase B Current",
+            "Generator Starboard AFT Phase C Current"
+        ],
+    }
+
+    COL_MAPPING = [
+        ["**General**", "**Extern**", "**Heaters**"], # Kolom 1
+        ["**Engines**"],                      # Kolom 2
+        ["**Generators**"]                    # Kolom 3
+    ]
+        
+    selected_metrics = []
+        
+    # Maak 3 kolommen aan
+    ui_cols = st.columns(5)
+    
+    for i, groups_in_col in enumerate(COL_MAPPING):
+        with ui_cols[i]:
+            for group_name in groups_in_col:
+                st.markdown(f"###### {group_name}")
+                for m in GROUPS[group_name]:
+                    if m in df.columns:
+                        # Unieke key voorkomt fouten bij dubbele variabelen (zoals Boost Pressure)
+                        if st.checkbox(m, key=f"cb_{group_name}_{m}"):
+                            selected_metrics.append(m)
+                st.write("") # Spacer
+
     st.divider()
-    st.subheader("Trend Analysis")
 
-    # Filter columns that are suitable for plotting
-    exclude_cols = ["Time", "Metric", "Name"]
-    plot_options = [c for c in df.columns if c not in exclude_cols]
-    
-    # Sort options: Total Fuel Rate first, then the rest alphabetically
-    if "Total Fuel Rate" in plot_options:
-        plot_options.remove("Total Fuel Rate")
-        plot_options = ["Total Fuel Rate"] + sorted(plot_options)
-    else:
-        plot_options = sorted(plot_options)
-
-    st.write("Select measurements to display in the graph:")
-    
-    # Create a layout with 4 columns for the checkboxes
-    cols = st.columns(4)
-    selected_sensors = []
-
-    # Create a checkbox for every measurement
-    for i, option in enumerate(plot_options):
-        # Determine which column to place the checkbox in
-        with cols[i % 4]:
-            # Default to True only for Total Fuel Rate
-            is_checked = st.checkbox(option, value=(option == "Total Fuel Rate"))
-            if is_checked:
-                selected_sensors.append(option)
-
-    # Display the graph based on the selected checkboxes
-    if selected_sensors:
-        fig_trend = px.line(
-            df, 
-            x="Time", 
-            y=selected_sensors, 
-            title="Trend: Selected Measurements"
-        )
-        fig_trend.update_layout(
-            xaxis_title="Time",
-            yaxis_title="Value",
+    if selected_metrics:
+        fig = px.line(df, x='Time', y=selected_metrics)
+        fig.update_layout(
             hovermode="x unified",
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            xaxis_title="Tijd",
+            yaxis_title="Waarde"
         )
-        st.plotly_chart(fig_trend, use_container_width=True)
-    else:
-        st.info("Please select at least one measurement to display the graph.")
+        st.plotly_chart(fig, use_container_width=True)
+
+    
